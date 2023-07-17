@@ -5,6 +5,7 @@ import win32gui
 import win32api
 import win32process
 
+import ctypes
 import time
 import threading
 import contextlib
@@ -14,7 +15,7 @@ from pynput import keyboard as kb
 from pynput._util.win32 import KeyTranslator
 
 
-CAPS_LOCK = kb.KeyCode(255)
+LOGI_CAPS_LOCK = kb.KeyCode(255)
 
 WM_INPUTLANGCHANGEREQUEST = 0x0050  # win32api const
 
@@ -36,8 +37,7 @@ def get_foreground_window_kb_layout():
     67699721 - 0x04090409 - english
     """
     thread_id = get_foreground_window_thread_id()
-    layout_id = win32api.GetKeyboardLayout(thread_id)
-    return layout_id
+    return win32api.GetKeyboardLayout(thread_id)
 
 
 def change_foreground_window_kb_layout(layout_id: int = 0):
@@ -49,6 +49,7 @@ def change_foreground_window_kb_layout(layout_id: int = 0):
     win32api.SendMessage(window_handle, WM_INPUTLANGCHANGEREQUEST, 0, layout_id)
 
 layouts = cycle(tuple(l for l in win32api.GetKeyboardLayoutList()))
+
 
 class CustomKeyTranslator(KeyTranslator):
     def __init__(self):
@@ -62,9 +63,12 @@ kt = CustomKeyTranslator()
 
 whdl = get_foreground_window()
 
-buffer: list[kb.KeyCode] = []
+buffer: list[kb.KeyCode | kb.Key] = []
 
 controller = kb.Controller()
+
+current_key = None
+
 
 def update_layout():
     next_layout = next(layouts)
@@ -74,31 +78,41 @@ def update_layout():
     change_foreground_window_kb_layout(next_layout)
     kt.update_layout()
 
-def on_activate(buffer):
+
+def on_ctrl_shift(buffer):
     '''Defines what happens on press of the hotkey'''
     def wrapper():
         for _ in buffer:
             controller.press(kb.Key.backspace)
         update_layout()
-        controller.type(''.join(kt(key.vk, ...)['char'] for key in buffer))
+        local_buffer = []
+        for key in buffer:
+            scan = getattr(key, '_scan', None)
+            if scan is not None:
+                char = kt.char_from_scan(scan)
+                if char is not None:
+                    k = kb.KeyCode.from_char(char=char, vk=key.vk)
+                    controller.press(k)
+                    local_buffer.append(k)
+        buffer.clear()
+        for k in local_buffer:
+            buffer.append(k)
+        print(buffer)
     return wrapper
 
-hotkey = kb.HotKey(
-    kb.HotKey.parse('<ctrl_l>+<shift>'), on_activate(buffer)
+HOTKEY_CTRL_SHIFT = kb.HotKey(
+    kb.HotKey.parse('<ctrl_l>+<shift>'), on_ctrl_shift(buffer)
 )
-
-
-current_key = None
 
 
 def is_esc():
     global current_key
-    if current_key and current_key == kb.Key.esc:
+    if current_key and current_key is kb.Key.esc:
         return True
     return False
 
 
-def check_window_is_switched():
+def check_window_has_switched():
     while True:
         if is_esc():
             return
@@ -118,25 +132,37 @@ def on_press(key: kb.Key | kb.KeyCode | None):
     if key is None:
         return
 
+    HOTKEY_CTRL_SHIFT.press(key)
+
     if not isinstance(key, kb.KeyCode):
         return
 
     buffer.append(key)
 
-    if key.vk == CAPS_LOCK.vk or key is kb.Key.caps_lock:
+    if key.vk == LOGI_CAPS_LOCK.vk or key is kb.Key.caps_lock:
         update_layout()
 
 
-    # print(kt(key.vk, ...)['char'])
+def on_release(key: kb.Key | kb.KeyCode | None):
+    if isinstance(key, kb.Key):
+        HOTKEY_CTRL_SHIFT.release(key)
 
 
-def on_release(key: kb.Key):
-    hotkey.press(key)
+def win32_event_filter(msg, data):
+    print(msg, data.vkCode)
+    if data.vkCode == 0xFF:
+        print('caps')
+        # Suppress x
+        listener.suppress_event()
+    if (data.vkCode == 0xA0 or data.vkCode == 0xA2) and HOTKEY_CTRL_SHIFT._state == HOTKEY_CTRL_SHIFT._keys:
+        print('ctr')
+        listener.suppress_event()
 
-
-buffer_thread = threading.Thread(target=check_window_is_switched)
-buffer_thread.start()
-with kb.Listener(on_press=on_press, on_release=on_release) as listener:
+# buffer_thread = threading.Thread(target=check_window_has_switched)
+# buffer_thread.start()
+with kb.Listener(
+    on_press=on_press, on_release=on_release, win32_event_filter=win32_event_filter
+) as listener:
     listener.join()
-buffer_thread.join()
+# buffer_thread.join()
 

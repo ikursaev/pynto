@@ -4,8 +4,9 @@ Interaction with kb layout on windows
 import win32gui
 import win32api
 import win32process
-import win32con
 
+import time
+import threading
 import contextlib
 from itertools import cycle
 
@@ -61,40 +62,61 @@ kt = CustomKeyTranslator()
 
 whdl = get_foreground_window()
 
-buffer: list[kb.Key | kb.KeyCode | None] = []
+buffer: list[kb.KeyCode] = []
 
 controller = kb.Controller()
+
+def update_layout():
+    next_layout = next(layouts)
+    current_layout = get_foreground_window_kb_layout()
+    if current_layout == next_layout:
+        next_layout = next(layouts)
+    change_foreground_window_kb_layout(next_layout)
+    kt.update_layout()
 
 def on_activate(buffer):
     '''Defines what happens on press of the hotkey'''
     def wrapper():
-        for _ in range(len(buffer)):
+        for _ in buffer:
             controller.press(kb.Key.backspace)
-        controller.type(''.join(reversed(buffer)))
-        print('fdsf')
+        update_layout()
+        controller.type(''.join(kt(key.vk, ...)['char'] for key in buffer))
     return wrapper
 
 hotkey = kb.HotKey(
     kb.HotKey.parse('<ctrl_l>+<shift>'), on_activate(buffer)
 )
 
+
+current_key = None
+
+
+def is_esc():
+    global current_key
+    if current_key and current_key == kb.Key.esc:
+        return True
+    return False
+
+
+def check_window_is_switched():
+    while True:
+        if is_esc():
+            return
+        if buffer:
+            current_whdl = get_foreground_window()
+            if current_whdl != whdl:
+                buffer.clear()
+        time.sleep(0.1)
+
+
 def on_press(key: kb.Key | kb.KeyCode | None):
-    print(key)
-    if key == kb.Key.esc:
+    global current_key
+    current_key = key
+    if is_esc():
         return False
 
     if key is None:
         return
-
-    if buffer:
-        current_whdl = get_foreground_window()
-        if current_whdl != whdl:
-            buffer.clear()
-    print(buffer)
-    hotkey = kb.HotKey(
-        kb.HotKey.parse('<ctrl_l>+<shift>'), on_activate(buffer)
-    )
-    hotkey.press(key)
 
     if not isinstance(key, kb.KeyCode):
         return
@@ -102,13 +124,19 @@ def on_press(key: kb.Key | kb.KeyCode | None):
     buffer.append(key)
 
     if key.vk == CAPS_LOCK.vk or key is kb.Key.caps_lock:
-        next_layout = next(layouts)
-        current_layour = get_foreground_window_kb_layout()
-        if current_layour == next_layout:
-            next_layout = next(layouts)
-        change_foreground_window_kb_layout(next_layout)
-        kt.update_layout()
+        update_layout()
 
 
-with kb.Listener(on_press=hotkey.press) as listener:
+    # print(kt(key.vk, ...)['char'])
+
+
+def on_release(key: kb.Key):
+    hotkey.press(key)
+
+
+buffer_thread = threading.Thread(target=check_window_is_switched)
+buffer_thread.start()
+with kb.Listener(on_press=on_press, on_release=on_release) as listener:
     listener.join()
+buffer_thread.join()
+

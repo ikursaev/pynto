@@ -5,7 +5,6 @@ import win32gui
 import win32api
 import win32process
 
-import ctypes
 import time
 import threading
 import contextlib
@@ -48,8 +47,8 @@ def change_foreground_window_kb_layout(layout_id: int = 0):
     window_handle = get_foreground_window()
     win32api.SendMessage(window_handle, WM_INPUTLANGCHANGEREQUEST, 0, layout_id)
 
-layouts = cycle(tuple(l for l in win32api.GetKeyboardLayoutList()))
 
+layouts = cycle(l for l in win32api.GetKeyboardLayoutList())
 
 class CustomKeyTranslator(KeyTranslator):
     def __init__(self):
@@ -105,17 +104,8 @@ HOTKEY_CTRL_SHIFT = kb.HotKey(
 )
 
 
-def is_esc():
-    global current_key
-    if current_key and current_key is kb.Key.esc:
-        return True
-    return False
-
-
 def check_window_has_switched():
     while True:
-        if is_esc():
-            return
         if buffer:
             current_whdl = get_foreground_window()
             if current_whdl != whdl:
@@ -123,11 +113,14 @@ def check_window_has_switched():
         time.sleep(0.1)
 
 
+def on_caps(key: kb.KeyCode):
+    if key.vk == LOGI_CAPS_LOCK.vk or key is kb.Key.caps_lock:
+        update_layout()
+
+
 def on_press(key: kb.Key | kb.KeyCode | None):
     global current_key
     current_key = key
-    if is_esc():
-        return False
 
     if key is None:
         return
@@ -139,30 +132,41 @@ def on_press(key: kb.Key | kb.KeyCode | None):
 
     buffer.append(key)
 
-    if key.vk == LOGI_CAPS_LOCK.vk or key is kb.Key.caps_lock:
-        update_layout()
+    on_caps(key)
 
 
 def on_release(key: kb.Key | kb.KeyCode | None):
-    if isinstance(key, kb.Key):
-        HOTKEY_CTRL_SHIFT.release(key)
+    if key is None:
+        return
+
+    HOTKEY_CTRL_SHIFT.release(key)
 
 
-def win32_event_filter(msg, data):
-    print(msg, data.vkCode)
-    if data.vkCode == 0xFF:
-        print('caps')
-        # Suppress x
-        listener.suppress_event()
-    if (data.vkCode == 0xA0 or data.vkCode == 0xA2) and HOTKEY_CTRL_SHIFT._state == HOTKEY_CTRL_SHIFT._keys:
-        print('ctr')
-        listener.suppress_event()
+# def win32_event_filter(msg, data):
+#     print(msg, type(msg), type(data), type(data.vkCode), data.vkCode)
+#     if msg == 256 and data.vkCode == 255:
+#         print('caps')
+#         # Suppress x
+#         # listener.suppress_event()
+#     if (msg == 256 and HOTKEY_CTRL_SHIFT._state == HOTKEY_CTRL_SHIFT._keys):
+#         print('ctr')
+#         # listener.suppress_event()
 
-# buffer_thread = threading.Thread(target=check_window_has_switched)
-# buffer_thread.start()
-with kb.Listener(
-    on_press=on_press, on_release=on_release, win32_event_filter=win32_event_filter
-) as listener:
+
+def is_esc(listener: kb.Listener):
+    global current_key
+
+    while True:
+        if current_key and current_key is kb.Key.esc:
+            listener.stop()
+            break
+        time.sleep(0.01)
+
+
+with kb.Listener(on_press=on_press, on_release=on_release) as listener:
+
+    th = threading.Thread(target=is_esc, args=(listener,))
+    th.start()
+    th.join()
     listener.join()
-# buffer_thread.join()
 

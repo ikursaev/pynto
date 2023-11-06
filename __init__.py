@@ -50,6 +50,7 @@ def change_foreground_window_kb_layout(layout_id: int = 0):
 
 layouts = cycle(l for l in win32api.GetKeyboardLayoutList())
 
+
 class CustomKeyTranslator(KeyTranslator):
     def __init__(self):
         super().__init__()
@@ -58,18 +59,20 @@ class CustomKeyTranslator(KeyTranslator):
     def _thread_input(self):
         yield get_foreground_window_thread_id()
 
+
 kt = CustomKeyTranslator()
 
 whdl = get_foreground_window()
 
-buffer: list[kb.KeyCode | kb.Key] = []
+buffer: list[kb.KeyCode] = []
+key_to_vk: dict = {}
 
 controller = kb.Controller()
 
 current_key = None
 
 
-def update_layout():
+def change_layout():
     next_layout = next(layouts)
     current_layout = get_foreground_window_kb_layout()
     if current_layout == next_layout:
@@ -78,44 +81,25 @@ def update_layout():
     kt.update_layout()
 
 
-def on_ctrl_shift(buffer):
+def on_ctrl_shift():
     '''Defines what happens on press of the hotkey'''
-    def wrapper():
-        for _ in buffer:
-            controller.press(kb.Key.backspace)
-        update_layout()
-        local_buffer = []
-        for key in buffer:
-            scan = getattr(key, '_scan', None)
-            if scan is not None:
-                char = kt.char_from_scan(scan)
-                if char is not None:
-                    k = kb.KeyCode.from_char(char=char, vk=key.vk)
-                    controller.press(k)
-                    local_buffer.append(k)
-        buffer.clear()
-        for k in local_buffer:
-            buffer.append(k)
-        print(buffer)
-    return wrapper
+    global buffer
+    change_layout()
+    for key in buffer:
+        controller.press(kb.Key.backspace)
+        key_data = kt(key.vk, None)
+        char = kt.char_from_scan(key_data["_scan"])
+        controller.press(char)
+        controller.release(char)
+
 
 HOTKEY_CTRL_SHIFT = kb.HotKey(
-    kb.HotKey.parse('<ctrl_l>+<shift>'), on_ctrl_shift(buffer)
+    kb.HotKey.parse('<ctrl_l>+<shift>'), on_ctrl_shift,
 )
 
 
-def check_window_has_switched():
-    while True:
-        if buffer:
-            current_whdl = get_foreground_window()
-            if current_whdl != whdl:
-                buffer.clear()
-        time.sleep(0.1)
-
-
-def on_caps(key: kb.KeyCode):
-    if key.vk == LOGI_CAPS_LOCK.vk or key is kb.Key.caps_lock:
-        update_layout()
+def is_caps(key: kb.KeyCode):
+    return key.vk == LOGI_CAPS_LOCK.vk or key is kb.Key.caps_lock
 
 
 def on_press(key: kb.Key | kb.KeyCode | None):
@@ -130,9 +114,11 @@ def on_press(key: kb.Key | kb.KeyCode | None):
     if not isinstance(key, kb.KeyCode):
         return
 
-    buffer.append(key)
+    if is_caps(key):
+        change_layout()
+        return
 
-    on_caps(key)
+    buffer.append(key)
 
 
 def on_release(key: kb.Key | kb.KeyCode | None):
@@ -140,17 +126,6 @@ def on_release(key: kb.Key | kb.KeyCode | None):
         return
 
     HOTKEY_CTRL_SHIFT.release(key)
-
-
-# def win32_event_filter(msg, data):
-#     print(msg, type(msg), type(data), type(data.vkCode), data.vkCode)
-#     if msg == 256 and data.vkCode == 255:
-#         print('caps')
-#         # Suppress x
-#         # listener.suppress_event()
-#     if (msg == 256 and HOTKEY_CTRL_SHIFT._state == HOTKEY_CTRL_SHIFT._keys):
-#         print('ctr')
-#         # listener.suppress_event()
 
 
 def is_esc(listener: kb.Listener):
